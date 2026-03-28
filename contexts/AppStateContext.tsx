@@ -6,20 +6,20 @@ import {
   useState,
   useCallback,
   useEffect,
+  useMemo,
+  useRef,
   type ReactNode,
 } from "react";
-import type { Team, Round, Candidate, MyVote, HistoryItem } from "@/types";
+import type { Team, Round, Candidate, MyVote } from "@/types";
 import { createClient } from "@/lib/supabase/client";
 import {
-  fetchMyTeam,
-  fetchCurrentRoundId,
+  initAppState,
   fetchRoundDetail,
-  fetchHistory,
   insertRound,
   insertCandidate,
   upsertVote,
-  closeRound as closeRoundInDb,
 } from "@/lib/supabase/queries";
+import { closeRoundAction } from "@/app/actions/round";
 
 interface AppState {
   team: Team | null;
@@ -28,7 +28,6 @@ interface AppState {
   currentRound: Round | null;
   candidates: Candidate[];
   myVote: MyVote;
-  history: HistoryItem[];
   createRound: (closesAt: string) => Promise<void>;
   addCandidate: (label: string, userId: string) => Promise<void>;
   vote: (candidateId: string) => Promise<void>;
@@ -48,7 +47,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     candidateId: null,
     updatedAt: null,
   });
-  const [history, setHistory] = useState<HistoryItem[]>([]);
+
+  const userIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    userIdRef.current = userId;
+  }, [userId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,22 +68,19 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       }
       setUserId(user.id);
 
-      const myTeam = await fetchMyTeam(supabase);
-      if (!myTeam || cancelled) {
+      const appState = await initAppState(supabase);
+      if (!appState || cancelled) {
         if (!cancelled) setLoading(false);
         return;
       }
-      setTeam(myTeam);
+      setTeam(appState.team);
 
-      const [roundId, historyItems] = await Promise.all([
-        fetchCurrentRoundId(supabase, myTeam.id),
-        fetchHistory(supabase, myTeam.id),
-      ]);
-
-      if (!cancelled) setHistory(historyItems);
-
-      if (roundId && !cancelled) {
-        const detail = await fetchRoundDetail(supabase, roundId, user.id);
+      if (appState.currentRoundId && !cancelled) {
+        const detail = await fetchRoundDetail(
+          supabase,
+          appState.currentRoundId,
+          user.id,
+        );
         if (detail && !cancelled) {
           setCurrentRound(detail.round);
           setCandidates(detail.candidates);
@@ -97,18 +97,101 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!currentRound || currentRound.status !== "open") return;
+
+    const supabase = createClient();
+    const roundId = currentRound.id;
+
+    const channel = supabase
+      .channel(`round-${roundId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "candidates",
+          filter: `round_id=eq.${roundId}`,
+        },
+        (payload: { new: Record<string, string> }) => {
+          const c = payload.new;
+          setCandidates((prev) => {
+            if (prev.some((p) => p.id === c.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: c.id,
+                roundId: c.round_id,
+                label: c.label,
+                proposedByUserId: c.proposed_by,
+                voteCount: 0,
+                createdAt: c.created_at,
+              },
+            ];
+          });
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "votes",
+          filter: `round_id=eq.${roundId}`,
+        },
+        async () => {
+          const uid = userIdRef.current;
+          if (!uid) return;
+
+          const { data: votesData } = await supabase
+            .from("votes")
+            .select("candidate_id, user_id, updated_at")
+            .eq("round_id", roundId);
+
+          const voteCounts = new Map<string, number>();
+          let newMyVote: MyVote = { candidateId: null, updatedAt: null };
+
+          for (const v of votesData ?? []) {
+            voteCounts.set(
+              v.candidate_id,
+              (voteCounts.get(v.candidate_id) ?? 0) + 1,
+            );
+            if (v.user_id === uid) {
+              newMyVote = {
+                candidateId: v.candidate_id,
+                updatedAt: v.updated_at,
+              };
+            }
+          }
+
+          setCandidates((prev) =>
+            prev.map((c) => ({
+              ...c,
+              voteCount: voteCounts.get(c.id) ?? 0,
+            })),
+          );
+          setMyVote(newMyVote);
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentRound?.id, currentRound?.status]);
+
   const createRound = useCallback(
     async (closesAt: string) => {
-      if (!team) return;
+      if (!team || !userId) return;
       const supabase = createClient();
-      const newRound = await insertRound(supabase, team.id, closesAt);
+      const newRound = await insertRound(supabase, team.id, closesAt, userId);
       if (newRound) {
         setCurrentRound(newRound);
         setCandidates([]);
         setMyVote({ candidateId: null, updatedAt: null });
       }
     },
-    [team],
+    [team, userId],
   );
 
   const addCandidate = useCallback(
@@ -161,9 +244,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const closeRound = useCallback(async () => {
     if (!currentRound || candidates.length === 0) return;
 
-    const supabase = createClient();
-    const result = await closeRoundInDb(supabase, currentRound.id);
-    if (!result) return;
+    const result = await closeRoundAction(currentRound.id);
+    if ("error" in result) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[closeRound]", result.error);
+      }
+      return;
+    }
 
     const updatedRound: Round = {
       ...currentRound,
@@ -175,15 +262,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       },
     };
     setCurrentRound(updatedRound);
-
-    const historyItem: HistoryItem = {
-      roundId: currentRound.id,
-      decidedAt: new Date().toISOString(),
-      menuLabel: result.winnerLabel,
-      voteCount: result.winnerVoteCount,
-    };
-    setHistory((prev) => [historyItem, ...prev]);
-  }, [currentRound, candidates]);
+  }, [currentRound, candidates.length]);
 
   const startNewRound = useCallback(() => {
     setCurrentRound(null);
@@ -191,23 +270,37 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setMyVote({ candidateId: null, updatedAt: null });
   }, []);
 
+  const value = useMemo(
+    () => ({
+      team,
+      userId,
+      loading,
+      currentRound,
+      candidates,
+      myVote,
+      createRound,
+      addCandidate,
+      vote,
+      closeRound,
+      startNewRound,
+    }),
+    [
+      team,
+      userId,
+      loading,
+      currentRound,
+      candidates,
+      myVote,
+      createRound,
+      addCandidate,
+      vote,
+      closeRound,
+      startNewRound,
+    ],
+  );
+
   return (
-    <AppStateContext.Provider
-      value={{
-        team,
-        userId,
-        loading,
-        currentRound,
-        candidates,
-        myVote,
-        history,
-        createRound,
-        addCandidate,
-        vote,
-        closeRound,
-        startNewRound,
-      }}
-    >
+    <AppStateContext.Provider value={value}>
       {children}
     </AppStateContext.Provider>
   );

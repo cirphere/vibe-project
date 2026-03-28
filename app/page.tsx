@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import dynamic from "next/dynamic";
 import { useAppState } from "@/contexts/AppStateContext";
 import EmptyRoundState from "@/components/EmptyRoundState";
-import CreateRoundModal from "@/components/CreateRoundModal";
-import VotingRound from "@/components/VotingRound";
+
+const CreateRoundModal = dynamic(() => import("@/components/CreateRoundModal"));
+const VotingRound = dynamic(() => import("@/components/VotingRound"));
 
 export default function Home() {
   const { loading, currentRound, createRound } = useAppState();

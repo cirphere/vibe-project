@@ -1,6 +1,6 @@
-"use client";
-
-import { useAppState } from "@/contexts/AppStateContext";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { initAppState, fetchHistory } from "@/lib/supabase/queries";
 import type { HistoryItem } from "@/types";
 
 function formatDate(isoString: string): string {
@@ -44,8 +44,12 @@ function EmptyHistory() {
   );
 }
 
-export default function HistoryPage() {
-  const { history } = useAppState();
+export default async function HistoryPage() {
+  const supabase = await createClient();
+  const appState = await initAppState(supabase);
+  if (!appState) redirect("/login");
+
+  const history = await fetchHistory(supabase, appState.team.id);
 
   if (history.length === 0) {
     return <EmptyHistory />;

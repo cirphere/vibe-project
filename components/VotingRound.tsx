@@ -1,7 +1,41 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAppState } from "@/contexts/AppStateContext";
+
+function RemainingTimer({ closesAt }: { closesAt: string | null }) {
+  const [text, setText] = useState("");
+
+  useEffect(() => {
+    if (!closesAt) return;
+    const deadline = closesAt;
+
+    function compute() {
+      const diff = new Date(deadline).getTime() - Date.now();
+      if (diff <= 0) return "마감 시간 경과";
+      const h = Math.floor(diff / 3_600_000);
+      const m = Math.floor((diff % 3_600_000) / 60_000);
+      const s = Math.floor((diff % 60_000) / 1_000);
+      if (h > 0) return `${h}시간 ${m}분 ${s}초 남음`;
+      if (m > 0) return `${m}분 ${s}초 남음`;
+      return `${s}초 남음`;
+    }
+
+    setText(compute());
+    const id = setInterval(() => setText(compute()), 1_000);
+    return () => clearInterval(id);
+  }, [closesAt]);
+
+  if (!text) return null;
+  return (
+    <>
+      {" · "}
+      <span className="font-medium text-orange-600 dark:text-orange-400">
+        {text}
+      </span>
+    </>
+  );
+}
 
 export default function VotingRound() {
   const {
@@ -16,7 +50,6 @@ export default function VotingRound() {
   } = useAppState();
 
   const [newMenuLabel, setNewMenuLabel] = useState("");
-  const [remainingText, setRemainingText] = useState("");
   const [proposing, setProposing] = useState(false);
   const [voting, setVoting] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -27,33 +60,27 @@ export default function VotingRound() {
       ? candidates.find((c) => c.id === round.winner!.candidateId) ?? null
       : null;
 
-  const computeRemaining = useCallback(() => {
-    if (!round?.closesAt) return "";
-    const diff = new Date(round.closesAt).getTime() - Date.now();
-    if (diff <= 0) return "마감 시간 경과";
-    const h = Math.floor(diff / 3_600_000);
-    const m = Math.floor((diff % 3_600_000) / 60_000);
-    const s = Math.floor((diff % 60_000) / 1_000);
-    if (h > 0) return `${h}시간 ${m}분 ${s}초 남음`;
-    if (m > 0) return `${m}분 ${s}초 남음`;
-    return `${s}초 남음`;
-  }, [round?.closesAt]);
+  const closesAtDisplay = useMemo(
+    () =>
+      round?.closesAt
+        ? new Date(round.closesAt).toLocaleTimeString("ko-KR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "—",
+    [round?.closesAt],
+  );
 
-  useEffect(() => {
-    if (isClosed) return;
-    setRemainingText(computeRemaining());
-    const id = setInterval(() => setRemainingText(computeRemaining()), 1_000);
-    return () => clearInterval(id);
-  }, [computeRemaining, isClosed]);
+  const sortedCandidates = useMemo(
+    () =>
+      [...candidates].sort((a, b) => {
+        if (b.voteCount !== a.voteCount) return b.voteCount - a.voteCount;
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      }),
+    [candidates],
+  );
 
   if (!round) return null;
-
-  const closesAtDisplay = round.closesAt
-    ? new Date(round.closesAt).toLocaleTimeString("ko-KR", {
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : "—";
 
   const handlePropose = async () => {
     const label = newMenuLabel.trim();
@@ -76,11 +103,6 @@ export default function VotingRound() {
       setVoting(false);
     }
   };
-
-  const sortedCandidates = [...candidates].sort((a, b) => {
-    if (b.voteCount !== a.voteCount) return b.voteCount - a.voteCount;
-    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-  });
 
   if (isClosed) {
     return (
@@ -195,14 +217,7 @@ export default function VotingRound() {
             </h2>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
               마감 {closesAtDisplay}
-              {remainingText && (
-                <>
-                  {" · "}
-                  <span className="font-medium text-orange-600 dark:text-orange-400">
-                    {remainingText}
-                  </span>
-                </>
-              )}
+              {!isClosed && <RemainingTimer closesAt={round.closesAt} />}
             </p>
           </div>
           <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-700 dark:bg-green-900/40 dark:text-green-400">

@@ -3,6 +3,8 @@ export interface Team {
   name: string;
 }
 
+export type RoundStatus = "open" | "closed";
+
 export interface RoundWinner {
   candidateId: string;
   label: string;
@@ -12,7 +14,7 @@ export interface RoundWinner {
 export interface Round {
   id: string;
   teamId: string;
-  status: "open" | "closed";
+  status: RoundStatus;
   closesAt: string | null;
   winner: RoundWinner | null;
 }
@@ -38,9 +40,45 @@ export interface HistoryItem {
   voteCount: number;
 }
 
-export interface TeamMember {
+// --- DB row types ---
+
+export interface CandidateRow {
   id: string;
-  teamId: string;
-  userId: string;
-  createdAt: string;
+  round_id: string;
+  label: string;
+  proposed_by: string;
+  created_at: string;
 }
+
+export interface VoteRow {
+  candidate_id: string;
+  user_id: string;
+  updated_at: string;
+}
+
+// --- RPC response types ---
+
+export interface RpcVoteCount {
+  candidate_id: string;
+  vote_count: number;
+}
+
+export interface RpcInitAppState {
+  team_id: string;
+  team_name: string;
+  current_round_id: string | null;
+}
+
+// --- Action result types ---
+
+export interface CloseRoundSuccess {
+  winnerId: string;
+  winnerLabel: string;
+  winnerVoteCount: number;
+}
+
+export type CloseRoundResult = CloseRoundSuccess | { error: string };
+
+export type LoginResult = { success: true } | { error: string };
+
+export type SignupResult = { success: string } | { error: string };

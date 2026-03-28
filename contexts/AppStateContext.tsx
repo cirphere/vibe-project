@@ -7,10 +7,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   type ReactNode,
 } from "react";
-import type { Team, Round, Candidate, MyVote } from "@/types";
+import type { Team, Round, Candidate, MyVote, CloseRoundResult } from "@/types";
 import { createClient } from "@/lib/supabase/client";
 import {
   initAppState,
@@ -20,6 +19,7 @@ import {
   upsertVote,
 } from "@/lib/supabase/queries";
 import { closeRoundAction } from "@/app/actions/round";
+import { useRealtimeSync } from "@/hooks/useRealtimeSync";
 
 interface AppState {
   team: Team | null;
@@ -35,6 +35,8 @@ interface AppState {
   startNewRound: () => void;
 }
 
+const EMPTY_VOTE: MyVote = { candidateId: null, updatedAt: null };
+
 const AppStateContext = createContext<AppState | null>(null);
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
@@ -43,15 +45,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [currentRound, setCurrentRound] = useState<Round | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [myVote, setMyVote] = useState<MyVote>({
-    candidateId: null,
-    updatedAt: null,
-  });
-
-  const userIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    userIdRef.current = userId;
-  }, [userId]);
+  const [myVote, setMyVote] = useState<MyVote>(EMPTY_VOTE);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,90 +91,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  useEffect(() => {
-    if (!currentRound || currentRound.status !== "open") return;
+  useRealtimeSync({
+    roundId: currentRound?.id,
+    roundStatus: currentRound?.status,
+    userId,
+    setCandidates,
+    setMyVote,
+  });
 
-    const supabase = createClient();
-    const roundId = currentRound.id;
-
-    const channel = supabase
-      .channel(`round-${roundId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "candidates",
-          filter: `round_id=eq.${roundId}`,
-        },
-        (payload: { new: Record<string, string> }) => {
-          const c = payload.new;
-          setCandidates((prev) => {
-            if (prev.some((p) => p.id === c.id)) return prev;
-            return [
-              ...prev,
-              {
-                id: c.id,
-                roundId: c.round_id,
-                label: c.label,
-                proposedByUserId: c.proposed_by,
-                voteCount: 0,
-                createdAt: c.created_at,
-              },
-            ];
-          });
-        },
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "votes",
-          filter: `round_id=eq.${roundId}`,
-        },
-        async () => {
-          const uid = userIdRef.current;
-          if (!uid) return;
-
-          const { data: votesData } = await supabase
-            .from("votes")
-            .select("candidate_id, user_id, updated_at")
-            .eq("round_id", roundId);
-
-          const voteCounts = new Map<string, number>();
-          let newMyVote: MyVote = { candidateId: null, updatedAt: null };
-
-          for (const v of votesData ?? []) {
-            voteCounts.set(
-              v.candidate_id,
-              (voteCounts.get(v.candidate_id) ?? 0) + 1,
-            );
-            if (v.user_id === uid) {
-              newMyVote = {
-                candidateId: v.candidate_id,
-                updatedAt: v.updated_at,
-              };
-            }
-          }
-
-          setCandidates((prev) =>
-            prev.map((c) => ({
-              ...c,
-              voteCount: voteCounts.get(c.id) ?? 0,
-            })),
-          );
-          setMyVote(newMyVote);
-        },
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [currentRound?.id, currentRound?.status]);
-
-  const createRound = useCallback(
+  const createRoundFn = useCallback(
     async (closesAt: string) => {
       if (!team || !userId) return;
       const supabase = createClient();
@@ -188,13 +107,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       if (newRound) {
         setCurrentRound(newRound);
         setCandidates([]);
-        setMyVote({ candidateId: null, updatedAt: null });
+        setMyVote(EMPTY_VOTE);
       }
     },
     [team, userId],
   );
 
-  const addCandidate = useCallback(
+  const addCandidateFn = useCallback(
     async (label: string, proposedByUserId: string) => {
       if (!currentRound || currentRound.status !== "open") return;
       const supabase = createClient();
@@ -211,7 +130,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [currentRound],
   );
 
-  const vote = useCallback(
+  const voteFn = useCallback(
     async (candidateId: string) => {
       if (!currentRound || currentRound.status !== "open") return;
       if (!userId) return;
@@ -241,10 +160,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [currentRound, userId, myVote.candidateId],
   );
 
-  const closeRound = useCallback(async () => {
+  const closeRoundFn = useCallback(async () => {
     if (!currentRound || candidates.length === 0) return;
 
-    const result = await closeRoundAction(currentRound.id);
+    const result: CloseRoundResult = await closeRoundAction(currentRound.id);
     if ("error" in result) {
       if (process.env.NODE_ENV !== "production") {
         console.error("[closeRound]", result.error);
@@ -252,7 +171,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const updatedRound: Round = {
+    setCurrentRound({
       ...currentRound,
       status: "closed",
       winner: {
@@ -260,14 +179,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         label: result.winnerLabel,
         voteCount: result.winnerVoteCount,
       },
-    };
-    setCurrentRound(updatedRound);
+    });
   }, [currentRound, candidates.length]);
 
   const startNewRound = useCallback(() => {
     setCurrentRound(null);
     setCandidates([]);
-    setMyVote({ candidateId: null, updatedAt: null });
+    setMyVote(EMPTY_VOTE);
   }, []);
 
   const value = useMemo(
@@ -278,10 +196,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       currentRound,
       candidates,
       myVote,
-      createRound,
-      addCandidate,
-      vote,
-      closeRound,
+      createRound: createRoundFn,
+      addCandidate: addCandidateFn,
+      vote: voteFn,
+      closeRound: closeRoundFn,
       startNewRound,
     }),
     [
@@ -291,10 +209,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       currentRound,
       candidates,
       myVote,
-      createRound,
-      addCandidate,
-      vote,
-      closeRound,
+      createRoundFn,
+      addCandidateFn,
+      voteFn,
+      closeRoundFn,
       startNewRound,
     ],
   );

@@ -1,6 +1,21 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Candidate, HistoryItem, MyVote, Round, Team } from "@/types";
+import type {
+  Candidate,
+  CandidateRow,
+  HistoryItem,
+  MyVote,
+  RpcInitAppState,
+  RpcVoteCount,
+  Round,
+  Team,
+  VoteRow,
+} from "@/types";
 import { logger } from "@/lib/logger";
+import {
+  buildVoteSummary,
+  toCandidateModel,
+  parseRoundStatus,
+} from "@/lib/vote-utils";
 
 export async function initAppState(
   supabase: SupabaseClient,
@@ -12,34 +27,15 @@ export async function initAppState(
     return null;
   }
 
-  const row = Array.isArray(data) ? data[0] : data;
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | RpcInitAppState
+    | undefined;
   if (!row?.team_id) return null;
 
   return {
     team: { id: row.team_id, name: row.team_name },
     currentRoundId: row.current_round_id ?? null,
   };
-}
-
-export async function fetchMyTeam(
-  supabase: SupabaseClient,
-  userId: string,
-): Promise<Team | null> {
-  const { data } = await supabase
-    .from("team_members")
-    .select("team_id, teams(id, name)")
-    .eq("user_id", userId)
-    .limit(1)
-    .maybeSingle();
-
-  const nested = data?.teams;
-  if (!nested) return null;
-  const team = (Array.isArray(nested) ? nested[0] : nested) as
-    | { id: string; name: string }
-    | null
-    | undefined;
-  if (!team) return null;
-  return { id: team.id, name: team.name };
 }
 
 export async function fetchRoundDetail(
@@ -73,27 +69,18 @@ export async function fetchRoundDetail(
     return null;
   }
 
-  const voteCounts = new Map<string, number>();
-  let myVote: MyVote = { candidateId: null, updatedAt: null };
+  const { voteCounts, myVote } = buildVoteSummary(
+    (votesData ?? []) as VoteRow[],
+    userId,
+  );
 
-  for (const v of votesData ?? []) {
-    voteCounts.set(v.candidate_id, (voteCounts.get(v.candidate_id) ?? 0) + 1);
-    if (v.user_id === userId) {
-      myVote = { candidateId: v.candidate_id, updatedAt: v.updated_at };
-    }
-  }
+  const candidates = ((candidatesData ?? []) as CandidateRow[]).map((row) =>
+    toCandidateModel(row, voteCounts.get(row.id) ?? 0),
+  );
 
-  const candidates: Candidate[] = (candidatesData ?? []).map((c) => ({
-    id: c.id,
-    roundId: c.round_id,
-    label: c.label,
-    proposedByUserId: c.proposed_by,
-    voteCount: voteCounts.get(c.id) ?? 0,
-    createdAt: c.created_at,
-  }));
-
+  const status = parseRoundStatus(roundData.status);
   let winner: Round["winner"] = null;
-  if (roundData.status === "closed" && roundData.winner_candidate_id) {
+  if (status === "closed" && roundData.winner_candidate_id) {
     const winnerCandidate = candidates.find(
       (c) => c.id === roundData.winner_candidate_id,
     );
@@ -109,7 +96,7 @@ export async function fetchRoundDetail(
   const round: Round = {
     id: roundData.id,
     teamId: roundData.team_id,
-    status: roundData.status as "open" | "closed",
+    status,
     closesAt: roundData.closes_at,
     winner,
   };
@@ -124,7 +111,11 @@ export async function insertRound(
   userId: string,
 ): Promise<Round | null> {
   const parsed = Date.parse(closesAt);
-  if (isNaN(parsed) || new Date(closesAt).toISOString() !== closesAt || parsed <= Date.now()) {
+  if (
+    isNaN(parsed) ||
+    new Date(closesAt).toISOString() !== closesAt ||
+    parsed <= Date.now()
+  ) {
     logger.warn("insertRound:invalid_closesAt");
     return null;
   }
@@ -155,7 +146,7 @@ export async function insertRound(
   return {
     id: data.id,
     teamId: data.team_id,
-    status: data.status as "open",
+    status: parseRoundStatus(data.status),
     closesAt: data.closes_at,
     winner: null,
   };
@@ -184,14 +175,7 @@ export async function insertCandidate(
     return null;
   }
 
-  return {
-    id: data.id,
-    roundId: data.round_id,
-    label: data.label,
-    proposedByUserId: data.proposed_by,
-    voteCount: 0,
-    createdAt: data.created_at,
-  };
+  return toCandidateModel(data as CandidateRow);
 }
 
 export async function fetchHistory(
@@ -225,7 +209,7 @@ export async function fetchHistory(
   }
 
   const voteCountMap = new Map<string, number>();
-  for (const vc of (voteCounts ?? []) as { candidate_id: string; vote_count: number }[]) {
+  for (const vc of (voteCounts ?? []) as RpcVoteCount[]) {
     voteCountMap.set(vc.candidate_id, Number(vc.vote_count));
   }
 

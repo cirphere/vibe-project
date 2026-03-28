@@ -18,17 +18,17 @@ export default function LoginPage() {
     startTransition(async () => {
       if (mode === "login") {
         const result = await login(formData);
-        if (result?.error) {
+        if ("error" in result) {
           setError(result.error);
-        } else if (result?.success) {
+        } else {
           window.location.href = "/";
         }
       } else {
         const result = await signup(formData);
-        if (result?.error) {
+        if ("error" in result) {
           setError(result.error);
-        } else if ("success" in (result ?? {})) {
-          setSuccess((result as { success: string }).success);
+        } else {
+          setSuccess(result.success);
         }
       }
     });

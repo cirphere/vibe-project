@@ -39,9 +39,10 @@ frontend/
 │   ├── auth/       # OAuth 콜백
 │   ├── history/    # 이력 페이지
 │   └── login/      # 로그인 페이지 및 액션
-├── components/     # UI 컴포넌트 (Header, VotingRound 등)
+├── components/     # UI 컴포넌트 (Header, VotingRound, ClosedRoundView 등)
 ├── contexts/       # React Context (AppState, Theme)
-├── lib/            # Supabase 클라이언트·서버·쿼리, 로거
+├── hooks/          # 커스텀 훅 (useRealtimeSync 등)
+├── lib/            # Supabase 클라이언트·서버·쿼리, 로거, 유틸
 └── types/          # TypeScript 타입 정의
 ```
 
@@ -57,4 +58,5 @@ npm run dev
 
 ## Changelog
 
+- **2026-03-28** — 코드 품질 감사 17건 전체 수정: VotingRound·AppStateProvider SRP 분리, 투표 집계 로직 공통 유틸 추출, RPC/DB row 타입 정의, 환경 변수 검증 유틸, COOKIE_OPTIONS 통합, dead code 제거, discriminated union 적용
 - **2026-03-28** — 보안 감사(OWASP) 및 성능 감사 수행, Supabase 쿼리 보안 강화, 에러 로깅 구조화(logger), Server Actions 분리, 다크 모드 아이콘 컴포넌트화, AppState Context 개선, next.config 보안 헤더 추가

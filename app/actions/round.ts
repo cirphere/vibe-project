@@ -2,13 +2,46 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { logger } from "@/lib/logger";
+import { buildVoteCountMap } from "@/lib/vote-utils";
+import type { CloseRoundResult, RpcVoteCount } from "@/types";
+
+async function verifyMembership(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  teamId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from("team_members")
+    .select("team_id")
+    .eq("user_id", userId)
+    .eq("team_id", teamId)
+    .maybeSingle();
+  return !!data;
+}
+
+function determineWinner(
+  candidates: { id: string; label: string }[],
+  voteCountMap: Map<string, number>,
+): { winnerId: string; winnerLabel: string; maxVotes: number } {
+  let winnerId = candidates[0].id;
+  let winnerLabel = candidates[0].label;
+  let maxVotes = voteCountMap.get(candidates[0].id) ?? 0;
+
+  for (const c of candidates.slice(1)) {
+    const count = voteCountMap.get(c.id) ?? 0;
+    if (count > maxVotes) {
+      maxVotes = count;
+      winnerId = c.id;
+      winnerLabel = c.label;
+    }
+  }
+
+  return { winnerId, winnerLabel, maxVotes };
+}
 
 export async function closeRoundAction(
   roundId: string,
-): Promise<
-  | { winnerId: string; winnerLabel: string; winnerVoteCount: number }
-  | { error: string }
-> {
+): Promise<CloseRoundResult> {
   const supabase = await createClient();
 
   const {
@@ -31,14 +64,7 @@ export async function closeRoundAction(
     return { error: "이미 마감된 라운드입니다." };
   }
 
-  const { data: membership } = await supabase
-    .from("team_members")
-    .select("team_id")
-    .eq("user_id", user.id)
-    .eq("team_id", round.team_id)
-    .maybeSingle();
-
-  if (!membership) {
+  if (!(await verifyMembership(supabase, user.id, round.team_id))) {
     return { error: "해당 라운드에 대한 권한이 없습니다." };
   }
 
@@ -68,23 +94,13 @@ export async function closeRoundAction(
     return { error: "투표 조회에 실패했습니다." };
   }
 
-  const voteCountMap = new Map<string, number>();
-  for (const vc of (voteCounts ?? []) as { candidate_id: string; vote_count: number }[]) {
-    voteCountMap.set(vc.candidate_id, Number(vc.vote_count));
-  }
-
-  let winnerId = candidatesData[0].id;
-  let winnerLabel = candidatesData[0].label;
-  let maxVotes = voteCountMap.get(candidatesData[0].id) ?? 0;
-
-  for (const c of candidatesData.slice(1)) {
-    const count = voteCountMap.get(c.id) ?? 0;
-    if (count > maxVotes) {
-      maxVotes = count;
-      winnerId = c.id;
-      winnerLabel = c.label;
-    }
-  }
+  const voteCountMap = buildVoteCountMap(
+    (voteCounts ?? []) as RpcVoteCount[],
+  );
+  const { winnerId, winnerLabel, maxVotes } = determineWinner(
+    candidatesData,
+    voteCountMap,
+  );
 
   const { error: updateError } = await supabase
     .from("rounds")

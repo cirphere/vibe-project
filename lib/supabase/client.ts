@@ -1,12 +1,12 @@
 import { createBrowserClient } from "@supabase/ssr";
+import { getSupabaseConfig } from "./config";
 
 let client: ReturnType<typeof createBrowserClient> | null = null;
 
+/** Browser-side Supabase client (singleton). */
 export function createClient() {
   if (client) return client;
-  client = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  );
+  const { url, anonKey } = getSupabaseConfig();
+  client = createBrowserClient(url, anonKey);
   return client;
 }

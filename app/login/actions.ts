@@ -3,17 +3,19 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { logger } from "@/lib/logger";
+import type { LoginResult, SignupResult } from "@/types";
 
 const MAX_EMAIL_LEN = 254;
 const MAX_PASSWORD_LEN = 128;
 const MIN_PASSWORD_LEN = 8;
 
-/** Basic email shape check; not full RFC coverage. */
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const VALIDATION_ERROR = "이메일과 비밀번호를 올바르게 입력해 주세요.";
 
-function parseCredentials(formData: FormData): { email: string; password: string } | null {
+function parseCredentials(
+  formData: FormData,
+): { email: string; password: string } | null {
   const emailRaw = formData.get("email");
   const passwordRaw = formData.get("password");
   const email = typeof emailRaw === "string" ? emailRaw.trim() : "";
@@ -33,16 +35,12 @@ function parseCredentials(formData: FormData): { email: string; password: string
   return { email, password };
 }
 
-export async function login(formData: FormData) {
+export async function login(formData: FormData): Promise<LoginResult> {
   const parsed = parseCredentials(formData);
-  if (!parsed) {
-    return { error: VALIDATION_ERROR };
-  }
-  const { email, password } = parsed;
+  if (!parsed) return { error: VALIDATION_ERROR };
 
   const supabase = await createClient();
-
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await supabase.auth.signInWithPassword(parsed);
 
   if (error) {
     logger.error("login:auth_failed", error);
@@ -52,16 +50,12 @@ export async function login(formData: FormData) {
   return { success: true };
 }
 
-export async function signup(formData: FormData) {
+export async function signup(formData: FormData): Promise<SignupResult> {
   const parsed = parseCredentials(formData);
-  if (!parsed) {
-    return { error: VALIDATION_ERROR };
-  }
-  const { email, password } = parsed;
+  if (!parsed) return { error: VALIDATION_ERROR };
 
   const supabase = await createClient();
-
-  const { error } = await supabase.auth.signUp({ email, password });
+  const { error } = await supabase.auth.signUp(parsed);
 
   if (error) {
     logger.error("signup:auth_failed", error);
